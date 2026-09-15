@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     public_base_url: str = "http://127.0.0.1:8000"
     signing_secret: str = "replace-this-in-production"
     api_key: str | None = None
+    shortcut_api_key: str | None = None
     job_timeout_seconds: int = 300
     download_token_ttl_seconds: int = 3600
     event_token_ttl_seconds: int = 3600

@@ -14,6 +14,7 @@ The repository contains the first server MVP:
 - image collection extraction through `gallery-dl`;
 - direct image downloading without re-encoding;
 - local artifact storage, signed downloads, Range support, and SSE progress;
+- a signed, source-controlled Apple Shortcut workflow under `shortcuts/`;
 - extension points for extractors, selectors, stores, and storage backends.
 
 See [the development plan](docs/development-plan.md) for the complete architecture and roadmap.
@@ -56,6 +57,23 @@ uv run pytest
 
 Runtime data is written to `.data/` by default and is ignored by Git.
 
+## VPS deployment
+
+`Dockerfile` and `compose.yaml` package the API and its in-process worker with
+FFmpeg, Deno, yt-dlp and gallery-dl. Downloads use a persistent Docker volume.
+See [the VPS deployment guide](docs/vps-deployment.md) for configuration,
+optional Caddy HTTPS, and integration with the existing Nginx Proxy Manager.
+
+## Apple Shortcut
+
+The Shortcut is compiled from source, with the production HTTPS endpoint embedded at release time. Install it from [smoodl.violetcho.tech/install](https://smoodl.violetcho.tech/install) and enter your API Key in the import setup field; the server URL is already configured. The shared template contains no credential.
+
+```bash
+shortcuts/build.sh https://download.example.com
+```
+
+See [the Shortcut documentation](shortcuts/README.md) for behavior, build requirements, and release guidance.
+
 ## Configuration
 
 Environment variables use the `SMOODL_` prefix:
@@ -72,4 +90,4 @@ SMOODL_YT_DLP_COOKIES_FILE=
 SMOODL_GALLERYDL_COOKIES_FILE=
 ```
 
-The in-memory job store is intended for the first local MVP. The documented production path replaces it with PostgreSQL/Redis without changing the public API or domain contracts.
+The in-memory job store is intended for the first local MVP. The documented production path replaces it with PostgreSQL/Redis without changing the public API or domain contracts. The VPS keeps API authentication enabled. An optional `SMOODL_SHORTCUT_API_KEY` gives the Shortcut a separately revocable credential alongside `SMOODL_API_KEY`. Users enter their key during import; the shared template must not embed a reusable secret.

@@ -1,0 +1,13 @@
+# Reuse the existing Nginx Proxy Manager on the VioletCho VPS.
+services:
+  smoodl:
+    networks:
+      default:
+      nginx:
+        aliases:
+          - smoodl-api
+
+networks:
+  nginx:
+    external: true
+    name: npm_default

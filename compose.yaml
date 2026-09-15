@@ -1,0 +1,56 @@
+name: smoodl
+
+services:
+  smoodl:
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim-bookworm}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+    image: smoodl:local
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      SMOODL_DATA_DIR: /data
+      SMOODL_PUBLIC_BASE_URL: ${SMOODL_PUBLIC_BASE_URL:?Set the public HTTPS URL}
+      SMOODL_SIGNING_SECRET: ${SMOODL_SIGNING_SECRET:?Set a random signing secret}
+      SMOODL_API_KEY: ${SMOODL_API_KEY:?Set a random API key}
+    ports:
+      - "127.0.0.1:${SMOODL_PORT:-8082}:8082"
+    volumes:
+      - downloads:/data
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Enable on a new VPS with no existing reverse proxy:
+  # docker compose --profile https up -d --build
+  caddy:
+    image: caddy:2-alpine
+    profiles: [https]
+    restart: unless-stopped
+    environment:
+      SMOODL_DOMAIN: ${SMOODL_DOMAIN:-smoodl.violetcho.tech}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      smoodl:
+        condition: service_healthy
+
+volumes:
+  downloads:
+  caddy_data:
+  caddy_config:

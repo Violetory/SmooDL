@@ -95,6 +95,8 @@ def test_container(tmp_path: Path) -> AppContainer:
         data_dir=tmp_path,
         public_base_url="http://test",
         signing_secret="test-secret",
+        api_key=None,
+        shortcut_api_key=None,
     )
     storage = LocalArtifactStorage(settings.artifact_dir)
     source = tmp_path / "fixture.bin"
@@ -104,6 +106,41 @@ def test_container(tmp_path: Path) -> AppContainer:
         extractors=ExtractorRegistry([FakeExtractor()]),
         materializer=FakeMaterializer(storage, source),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary_key", [None, "primary-test-key"])
+async def test_shortcut_key_can_be_revoked_independently(
+    test_container: AppContainer, primary_key: str | None
+) -> None:
+    test_container.settings.api_key = primary_key
+    test_container.settings.shortcut_api_key = "shortcut-test-key"
+    transport = httpx.ASGITransport(app=create_app(test_container))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for path in (
+            "/job/create", "/job/get", "/job/materialize", "/job/cancel",
+            "/job/subscribe", "/file/authorize", "/platform/list",
+        ):
+            for authorization in (None, "Bearer wrong-key", "shortcut-test-key"):
+                headers = {"Authorization": authorization} if authorization else {}
+                denied = await client.post(path, json={}, headers=headers)
+                assert denied.status_code == 401
+        for key in filter(None, (primary_key, "shortcut-test-key")):
+            allowed = await client.post(
+                "/platform/list", json={}, headers={"Authorization": f"Bearer {key}"}
+            )
+            assert allowed.status_code == 200
+        assert (await client.get("/system/health")).status_code == 200
+        test_container.settings.shortcut_api_key = "replacement-test-key"
+        revoked = await client.post(
+            "/platform/list", json={}, headers={"Authorization": "Bearer shortcut-test-key"}
+        )
+        assert revoked.status_code == 401
+        if primary_key:
+            unchanged = await client.post(
+                "/platform/list", json={}, headers={"Authorization": f"Bearer {primary_key}"}
+            )
+            assert unchanged.status_code == 200
 
 
 async def wait_for_status(

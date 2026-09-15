@@ -4,6 +4,8 @@
 
 SmooDL is an API-first media inspection and download service. Its first client is an Apple Shortcut that submits a shared URL. Image posts return previewable assets for multi-selection; video posts are downloaded automatically. Future Web and CLI clients use the same API and domain model.
 
+The distributed Shortcut embeds its production HTTPS origin and asks for an API Key during import. The shared template contains no credential; the recipient’s configured copy uses that key for authenticated job commands.
+
 SmooDL promises the highest-quality representation currently exposed to the authorized user by a platform. It prefers an existing watermark-free representation and does not re-encode media by default. It does not promise to recover an upload master that a platform does not expose, remove watermarks from pixels, or bypass private, paid, DRM-protected, or otherwise inaccessible content.
 
 ## 2. Design decisions
@@ -12,6 +14,7 @@ SmooDL promises the highest-quality representation currently exposed to the auth
 - Paths use `/{service}/{action}` and contain no `/api`, version prefix, or resource identifier.
 - JSON parameters are carried in request bodies.
 - Browser-native downloads and SSE use signed opaque query tokens because those transports require usable GET URLs.
+- The VPS requires authenticated job commands. A separate Shortcut API key can be revoked independently of the main key. Keys are user-held access credentials, not secrets embedded in the distributed template. Add server-side quotas, rate limits, and concurrency limits for broader distribution.
 - The server begins as a modular monolith with independent API, worker, and cleanup processes.
 - Extracting candidates, selecting quality, downloading bytes, processing containers, and storing artifacts are separate responsibilities.
 - Public schemas never expose raw `yt-dlp` or `gallery-dl` output.
@@ -56,6 +59,16 @@ queued -> inspecting
 Terminal alternatives are `failed`, `cancelled`, and `expired`.
 
 Inspection downloads metadata and preview candidates only. An image or mixed post waits for selected asset IDs. An all-video post materializes automatically. Materialization downloads selected representations, merges separate video/audio streams with stream copy when required, verifies the result, stores artifacts, and creates signed download URLs.
+
+### Shortcut workflow
+
+1. Receive text, a URL, or a Safari webpage from the share sheet; when invoked directly, ask only for the media URL.
+2. Extract shared URLs, ask which to use when there are several, and create a `best_available` / `prefer_clean` job.
+3. Poll up to 300 times with one-second waits; requests and user selection take additional time.
+4. For an image or mixed post, download signed previews and show a multi-select picker with every item selected initially, then submit the chosen asset IDs.
+5. For an all-video post, continue without a selection prompt.
+6. Save Photos-compatible artifacts to the photo library. Preserve higher-quality incompatible containers by saving them under `iCloud Drive/Shortcuts/SmooDL/<job ID>/`.
+7. Show one completion notification or a stable server error message.
 
 ## 6. Public API
 
@@ -117,6 +130,7 @@ Current YouTube extraction requires `yt-dlp`, `yt-dlp-ejs`, Deno, FFmpeg, and ff
 - Limit file size, duration, concurrency, redirects, and task lifetime.
 - Sanitize filenames and keep writes inside a job-specific storage directory.
 - Store API tokens as hashes and platform credentials encrypted; never log credentials, PO tokens, or signed CDN URLs.
+- Do not embed a reusable API key in the distributed Shortcut. Apply public-client rate limits by IP/device risk signals and cap concurrent jobs, bytes, and CPU time server-side.
 - Use short-lived HMAC-signed opaque tokens for events, previews, and downloads.
 - Automatically delete expired temporary data.
 
@@ -125,6 +139,7 @@ Current YouTube extraction requires `yt-dlp`, `yt-dlp-ejs`, Deno, FFmpeg, and ff
 ```text
 SmooDL/
   docs/
+  shortcuts/         Cherri source, release builder, and usage docs
   src/smoodl/
     api/             RPC routes and schemas
     domain/          stable models and enums
@@ -142,10 +157,11 @@ Future `apps/web`, `apps/cli`, and generated TypeScript/Python SDKs remain clien
 
 1. Establish domain models, settings, stores, storage, RPC routes, and tests.
 2. Deliver YouTube inspection and automatic highest-quality materialization.
-3. Deliver gallery-based image inspection, preview selection, and byte-preserving downloads for Instagram, X, Pinterest, and TikTok.
-4. Add authentication sessions, rate limiting, persistent jobs, distributed workers, and object storage.
-5. Add dedicated Douyin, Xiaohongshu, and Threads adapters with fixtures and smoke tests.
-6. Generate SDKs and build the Web and CLI clients.
+3. Deliver the Shortcut source, API Key import form, signed release build, polling, gallery selection, and automatic saving.
+4. Deliver gallery-based image inspection, preview selection, and byte-preserving downloads for Instagram, X, Pinterest, and TikTok.
+5. Add rate limiting, persistent jobs, distributed workers, and object storage before publicly promoting the Shortcut.
+6. Add dedicated Douyin, Xiaohongshu, and Threads adapters with fixtures and smoke tests.
+7. Generate SDKs and build the Web and CLI clients.
 
 ## 13. MVP acceptance criteria
 

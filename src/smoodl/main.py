@@ -30,7 +30,11 @@ def create_app(container: AppContainer | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next):  # type: ignore[no-untyped-def]
-        api_key = resolved.settings.api_key
+        api_keys = [
+            key
+            for key in (resolved.settings.api_key, resolved.settings.shortcut_api_key)
+            if key
+        ]
         protected = request.method == "POST" and request.url.path in {
             "/job/create",
             "/job/get",
@@ -40,10 +44,13 @@ def create_app(container: AppContainer | None = None) -> FastAPI:
             "/file/authorize",
             "/platform/list",
         }
-        if api_key and protected:
-            authorization = request.headers.get("authorization", "")
-            expected = f"Bearer {api_key}"
-            if not hmac.compare_digest(authorization, expected):
+        if api_keys and protected:
+            authorization = request.headers.get("authorization", "").encode()
+            matches = [
+                hmac.compare_digest(authorization, f"Bearer {key}".encode())
+                for key in api_keys
+            ]
+            if not any(matches):
                 body = ApiErrorEnvelope(
                     error=ErrorView(
                         code="UNAUTHORIZED",

@@ -1,0 +1,233 @@
+#include 'actions/documents'
+#include 'actions/photos'
+#include 'actions/text'
+#include 'actions/web'
+
+#define name SmooDL
+#define color blue
+#define glyph downloadArrow
+#define inputs text, url, webpage
+#define outputs file, image, media
+#define from sharesheet
+#define version 18
+
+#question apiKeyQuestion "填写 SmooDL API Key（只填密钥，不需要 Bearer 前缀）" ""
+
+// Cherri's JSON helper only accepts a compile-time dictionary. This action sends
+// runtime-generated JSON as the raw request body, which is needed for the list
+// of asset IDs selected in the image picker.
+action 'downloadurl' jsonTextRequest(
+    text url: 'WFURL',
+    &variable body: 'WFRequestVariable',
+    dictionary! headers: 'WFHTTPHeaders'
+): variable {
+    "WFHTTPMethod": "POST",
+    "WFHTTPBodyType": "File"
+}
+
+// The release contains only the public endpoint. The import question populates
+// this Text action on the recipient's device, never in the shared template.
+// Keep an explicit action before the question: Cherri omits ActionIndex=0,
+// which makes Apple's importer discard the import question.
+comment('SmooDL：分享媒体链接即可下载。下方文本项由导入设置填写 API Key，请勿将填写后的密钥分享给他人。')
+const configuredKey = text(apiKeyQuestion)
+const BASE_URL = "__SMOODL_BASE_URL__"
+const API_KEY = trimWhitespace("{configuredKey}")
+if !API_KEY {
+    alert("请打开此快捷指令，将开头的空白「文本」项填写为你的 API Key，或重新导入并完成设置。", "尚未配置 API Key")
+    stop()
+}
+
+@inputText = "{ShortcutInput}"
+if !@inputText {
+    @inputText = prompt("粘贴要下载的媒体链接", "URL")
+}
+const sharedURLs = getURLs("{@inputText}")
+@sourceURL = getFirstItem(sharedURLs)
+const urlCount = count(sharedURLs)
+if urlCount > 1 {
+    @sourceURL = chooseFromList(sharedURLs, "选择要下载的链接")
+}
+
+if !@sourceURL {
+    alert("没有在分享内容中找到链接。", "SmooDL")
+    stop()
+}
+
+const createdRaw = jsonRequest(
+    "{BASE_URL}/job/create",
+    "POST",
+    {
+        "url": "{@sourceURL}",
+        "quality": "best_available",
+        "watermark_policy": "prefer_clean",
+        "playlist": false
+    },
+    {"Authorization": "Bearer {API_KEY}"}
+)
+const created = getDictionary(createdRaw)
+@jobID = "{created['id']}"
+@jobStatus = "{created['status']}"
+@jobResponse = created
+@selectionSubmitted = false
+
+if !@jobID {
+    const createErrorRaw = getValue(created, "error")
+    const createError = getDictionary(createErrorRaw)
+    const createErrorCode = "{createError['code']}"
+    if createErrorCode == "UNAUTHORIZED" {
+        alert("API Key 无效或已被撤销，请检查快捷指令开头的「文本」项。只填写密钥，不要添加 Bearer 前缀。", "身份验证失败")
+        stop()
+    }
+    alert("服务没有创建任务：{createError['message']}", "SmooDL")
+    stop()
+}
+
+// The service timeout is five minutes. Each pass either handles the latest
+// state or refreshes it after a one-second delay.
+repeat attempt for 300 {
+    if @jobStatus == "awaiting_selection" && @selectionSubmitted == false {
+        const assetsRaw = getValue(@jobResponse, "assets")
+        if !assetsRaw {
+            alert("服务器没有返回可选择的媒体。", "SmooDL")
+            stop()
+        }
+        @previewItems = []
+
+        for assetRaw in assetsRaw {
+            const asset = getDictionary(@assetRaw)
+            @assetID = "{asset['id']}"
+            @thumbnailURL = "{asset['thumbnail_url']}"
+            @assetType = "{asset['type']}"
+
+            if @thumbnailURL {
+                const preview = downloadURL(@thumbnailURL)
+                const namedPreview = setName(preview, "smoodl-{@assetID}")
+                @previewItems += namedPreview
+            } else {
+                // A mixed post can contain a video without a thumbnail. Keeping
+                // a text row still lets the user include it in the same picker.
+                @previewItems += "smoodl-{@assetID} · {@assetType}"
+            }
+        }
+
+        const chosenItems = chooseFromList(
+            @previewItems,
+            "选择要下载的图片或媒体",
+            true,
+            true
+        )
+        @selectedIDs = []
+
+        for chosenItem in chosenItems {
+            const chosenName = getName(@chosenItem)
+            // IDs are generated as asset_ + 32 hexadecimal characters. Extract
+            // only that identifier, regardless of thumbnail extension or label.
+            const matchedIDs = matchText('asset_[0-9a-f]{32}', "{chosenName}")
+            const cleanID = getFirstItem(matchedIDs)
+            if !cleanID {
+                alert("无法识别所选媒体，请重新运行。", "SmooDL")
+                stop()
+            }
+            @selectedIDs += cleanID
+        }
+
+        if !@selectedIDs {
+            jsonRequest("{BASE_URL}/job/cancel", "POST", {"job_id": "{@jobID}"}, {"Authorization": "Bearer {API_KEY}"})
+            alert("没有选择媒体，任务已取消。", "SmooDL")
+            stop()
+        }
+
+        const joinedIDs = joinText(@selectedIDs, '","')
+        const materializePrefix = text('{"job_id":"')
+        const materializeIDsPrefix = text('","asset_ids":["')
+        const materializeSuffix = text('"],"archive":"auto"}')
+        @materializeBodyParts = []
+        @materializeBodyParts += materializePrefix
+        @materializeBodyParts += @jobID
+        @materializeBodyParts += materializeIDsPrefix
+        @materializeBodyParts += joinedIDs
+        @materializeBodyParts += materializeSuffix
+        @materializeBody = joinText(@materializeBodyParts, "")
+        const materializedRaw = jsonTextRequest(
+            "{BASE_URL}/job/materialize",
+            @materializeBody,
+            {"Content-Type": "application/json", "Authorization": "Bearer {API_KEY}"}
+        )
+        const materialized = getDictionary(materializedRaw)
+        @jobStatus = "{materialized['status']}"
+        @jobResponse = materialized
+        if !@jobStatus {
+            const selectionErrorRaw = getValue(materialized, "error")
+            const selectionError = getDictionary(selectionErrorRaw)
+            alert("提交选择失败：{selectionError['message']}", "SmooDL")
+            stop()
+        }
+        @selectionSubmitted = true
+    }
+
+    if @jobStatus == "completed" {
+        const artifactsRaw = getValue(@jobResponse, "artifacts")
+        if !artifactsRaw {
+            alert("任务已完成，但服务器没有返回下载文件。", "SmooDL")
+            stop()
+        }
+        @savedCount = 0
+
+        for artifactRaw in artifactsRaw {
+            const artifact = getDictionary(@artifactRaw)
+            @downloadURL = "{artifact['download_url']}"
+            @filename = "{artifact['filename']}"
+            @saveTarget = "{artifact['save_target']}"
+            const downloadedFile = downloadURL(@downloadURL)
+            const namedFile = setName(downloadedFile, @filename)
+
+            if @saveTarget == "photos" {
+                savePhoto(namedFile)
+            } else {
+                saveFile("SmooDL/{@jobID}/{@filename}", namedFile, false)
+            }
+            @savedCount += 1
+        }
+
+        showNotification("已保存 {@savedCount} 个文件", "SmooDL")
+        stop()
+    }
+
+    if @jobStatus == "failed" {
+        const failureRaw = getValue(@jobResponse, "error")
+        const failure = getDictionary(failureRaw)
+        alert("{failure['message']}", "下载失败")
+        stop()
+    }
+
+    if @jobStatus == "cancelled" {
+        alert("任务已取消，请重新运行。", "SmooDL")
+        stop()
+    }
+    if @jobStatus == "expired" {
+        alert("任务已过期，请重新运行。", "SmooDL")
+        stop()
+    }
+
+    wait(1)
+    const refreshedRaw = jsonRequest(
+        "{BASE_URL}/job/get",
+        "POST",
+        {"job_id": "{@jobID}"},
+        {"Authorization": "Bearer {API_KEY}"}
+    )
+    const refreshed = getDictionary(refreshedRaw)
+    @jobStatus = "{refreshed['status']}"
+    if !@jobStatus {
+        const refreshErrorRaw = getValue(refreshed, "error")
+        const refreshError = getDictionary(refreshErrorRaw)
+        alert("查询任务失败：{refreshError['message']}。任务编号：{@jobID}", "SmooDL")
+        stop()
+    }
+
+    // Point subsequent state handling at the most recent response.
+    @jobResponse = refreshed
+}
+
+alert("等待已结束，服务器可能仍在处理。任务编号：{@jobID}。请保留编号，联系维护者查看结果，避免重复提交。", "SmooDL")

@@ -1,0 +1,5 @@
+{$SMOODL_DOMAIN} {
+    reverse_proxy smoodl:8082 {
+        flush_interval -1
+    }
+}
